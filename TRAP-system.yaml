@@ -1,0 +1,228 @@
+esphome:
+  name: trap-system
+  
+  on_boot:
+    priority: 200
+    then:
+      - alarm_control_panel.arm_away: door_open_alarm
+      - output.turn_on: "led_locked"
+      - output.turn_off: "led_armed"
+
+      
+esp8266:
+  board: d1_mini
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret trap_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret trap_ota_pass
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Trap-System Fallback Hotspot"
+    password: !secret trap_fallback_wifi_pass
+
+captive_portal:
+
+
+
+# Define globals to track the system state
+globals:
+  - id: state
+    type: int
+    initial_value: "0"  # LOCKED - 0; CHANGE to 0
+  - id: door_opening_sequence
+    type: bool
+    initial_value: "false"
+  - id: is_door_open
+    type: bool
+    initial_value: "false"
+
+script:
+  - id: open_door
+    then:
+      - if:
+          condition: 
+            - lambda: return id(state) == 1;
+          then:
+            - logger.log: "Opening door!"
+            - output.turn_on: open_door_gpio
+            - lambda: id(is_door_open) = true;
+          else:
+            - logger.log: "Trying to open door when state is locked!"
+  - id: close_door
+    then:
+      - logger.log: "Closing door!"
+      - output.turn_off: open_door_gpio
+      - lambda: id(is_door_open) = false;
+  - id: arm_alarm
+    then:
+      - alarm_control_panel.disarm: 
+          id: door_open_alarm
+          code: !secret trap_open_door_code
+      - alarm_control_panel.arm_away: door_open_alarm
+      - lambda: id(door_opening_sequence) = false;
+  - id: set_state_locked_only_use_in_alarm
+    then:
+      - logger.log: "Setting state to locked."
+      - globals.set:
+          id: state
+          value: "0"
+      - output.turn_on: "led_locked"
+      - output.turn_off: "led_armed"
+  - id: set_state_locked
+    then:
+      - alarm_control_panel.arm_away: reset_trap_alarm
+  - id: set_state_armed
+    then:
+      - if:
+          condition:
+            - binary_sensor.is_on: sw_housing  
+          then:
+            - logger.log: "Setting state to armed."
+            - globals.set:
+                id: state
+                value: "1"
+            - output.turn_off: "led_locked"
+            - output.turn_on: "led_armed"
+          else:
+            - logger.log: "Try to reset switch with housing NC!"
+          
+
+button:
+  - platform: template
+    name: "Test TRAP"
+    on_press:
+      - script.execute: set_state_locked
+
+output:
+  - platform: gpio
+    id: open_door_gpio
+    pin:
+      number: D5
+  - platform: gpio
+    id: led_armed
+    pin:
+      number: D8
+  - platform: gpio
+    id: led_locked
+    pin:
+      number: D7
+
+alarm_control_panel:
+  - platform: template   
+    id: door_open_alarm
+    name: "Door open panel"
+    pending_time: "5s"
+    codes:
+      - !secret trap_open_door_code
+    on_triggered:
+      then:
+        - script.execute: close_door
+        - script.execute: arm_alarm
+    on_disarmed:
+      then:
+        - if: 
+            condition:
+              lambda: return !id(door_opening_sequence);
+            then:
+              - alarm_control_panel.arm_away: door_open_alarm
+              - lambda: id(door_opening_sequence) = true;  
+              - alarm_control_panel.pending: door_open_alarm 
+    on_pending: 
+      then:
+        - if: 
+            condition:
+              lambda: return id(state) == 1;      
+            then:
+              - script.execute: open_door
+            else:
+              - script.execute: arm_alarm        
+  
+  - platform: template
+    id: reset_trap_alarm
+    name: "Reset TRAP"
+    codes:
+      - !secret trap_arm_code
+    on_disarmed: 
+      then:
+        - script.execute: set_state_armed
+    on_armed_away: 
+      then:
+        - script.execute: set_state_locked_only_use_in_alarm
+
+
+text_sensor:
+  - platform: template
+    name: "State"
+    id: "txt_status"
+    lambda: |-
+      if(id(state)){
+        return id(txt_status).state = "Armed";
+      }else{
+        return id(txt_status).state =  "Locked";
+      }
+    update_interval: 2s
+
+binary_sensor:
+  - platform: template
+    name: "Door open state"
+    device_class: door
+    lambda: return id(is_door_open);
+
+  - platform: gpio
+    # when state 1 (ARMED) & 
+    id: sw_access_ctrl 
+    name: "Access Control Switch"
+    pin:
+      number: D1
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_press:
+      then:
+        - script.execute: open_door
+    on_release:
+      then:
+        - script.execute: close_door
+      
+  - platform: gpio
+    id: sw_housing
+    name: "Housing intact"
+    pin:
+      number: D2
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_release:
+      then:
+        - script.execute: set_state_locked
+
+        
+  - platform: gpio
+    id: sw_reset
+    name: "Reset switch"
+    pin: 
+      number: D3
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_release:
+      then:
+        - script.execute: set_state_armed
+
