@@ -5,8 +5,7 @@ esphome:
     priority: 200
     then:
       - alarm_control_panel.arm_away: door_open_alarm
-      - output.turn_on: "led_locked"
-      - output.turn_off: "led_armed"
+      - script.execute: set_state_locked
 
       
 esp8266:
@@ -74,9 +73,11 @@ script:
           code: !secret trap_open_door_code
       - alarm_control_panel.arm_away: door_open_alarm
       - lambda: id(door_opening_sequence) = false;
+
   - id: set_state_locked_only_use_in_alarm
     then:
       - logger.log: "Setting state to locked."
+      - script.execute: close_door
       - globals.set:
           id: state
           value: "0"
@@ -85,18 +86,24 @@ script:
   - id: set_state_locked
     then:
       - alarm_control_panel.arm_away: reset_trap_alarm
+  - id: set_state_armed_only_use_in_alarm
+    then:
+      - logger.log: "Setting state to armed."
+      - globals.set:
+          id: state
+          value: "1"
+      - output.turn_off: "led_locked"
+      - output.turn_on: "led_armed"
+          
   - id: set_state_armed
     then:
       - if:
           condition:
             - binary_sensor.is_on: sw_housing  
           then:
-            - logger.log: "Setting state to armed."
-            - globals.set:
-                id: state
-                value: "1"
-            - output.turn_off: "led_locked"
-            - output.turn_on: "led_armed"
+            - alarm_control_panel.disarm: 
+                id: reset_trap_alarm
+                code: !secret trap_arm_code
           else:
             - logger.log: "Try to reset switch with housing NC!"
           
@@ -158,7 +165,7 @@ alarm_control_panel:
       - !secret trap_arm_code
     on_disarmed: 
       then:
-        - script.execute: set_state_armed
+        - script.execute: set_state_armed_only_use_in_alarm
     on_armed_away: 
       then:
         - script.execute: set_state_locked_only_use_in_alarm
