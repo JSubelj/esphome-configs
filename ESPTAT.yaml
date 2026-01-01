@@ -1,11 +1,16 @@
 esphome:
   name: esptat
+  includes:
+    - ESPTAT.h
 
 esp8266:
   board: d1_mini
 
 # Enable logging
 logger:
+  level: INFO
+  logs:
+    switch: WARN
 
 # Enable Home Assistant API
 api:
@@ -27,3 +32,166 @@ wifi:
 
 captive_portal:
     
+sensor:
+  - platform: wifi_signal # Reports the WiFi signal strength/RSSI in dB
+    name: "WiFi Signal dB"
+    id: wifi_signal_db
+    update_interval: 60s
+    entity_category: "diagnostic"
+
+  - platform: copy # Reports the WiFi signal strength in %
+    source_id: wifi_signal_db
+    name: "WiFi Signal Percent"
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+    unit_of_measurement: "%"
+    entity_category: "diagnostic"
+    device_class: ""
+  
+globals:
+  - id: circulation_sw_activated_millis
+    type: uint32_t
+    initial_value: '0'
+    restore_value: no
+  - id: circulation_is_boot
+    type: bool
+    initial_value: 'true'
+    restore_value: no
+  - id: circulation_active
+    type: bool
+    initial_value: 'false'
+    restore_value: no
+
+script:
+  - id: circulation_activate
+    then:
+      - globals.set: 
+          id: circulation_is_boot
+          value: 'false'
+      - globals.set:
+          id: circulation_active
+          value: 'true'
+  - id: circulation_deactivate
+    then:
+      - globals.set:
+          id: circulation_active
+          value: 'false'
+
+      
+
+
+
+number:
+  - platform: template
+    name: "Circulation Timer Duration in minutes"
+    id: circulation_timer_duration
+    min_value: 1
+    max_value: 20
+    step: 1
+    initial_value: 5  # 5 minutes 
+    optimistic: true
+    restore_value: true
+    unit_of_measurement: "min"
+
+button:
+  - platform: template
+    name: "Run circulation"
+    on_press:
+      - script.execute: circulation_activate
+      - delay: 150ms
+      - script.execute: circulation_deactivate
+
+text_sensor:
+  - platform: template
+    name: "Circulation timer"
+    lambda: |-
+      if(id(sw_circulation_pump).state){
+        uint32_t diff = (circulation_duration_in_ms()-time_from_circulation_activated())/1000;
+        char buffer[64];
+        sprintf(buffer, "%02d:%02d",diff / 60,diff % 60);
+        return {buffer};
+      }else{
+        return {"Not running"};
+      }
+    update_interval: 1s
+    icon: "mdi:clock-time-eight-outline"
+
+# inputs
+binary_sensor:
+  - platform: gpio
+    name: "Circulation pump"
+    device_class: "running"
+    id: sw_circulation_pump
+    pin: 
+      number: D6
+      allow_other_uses: true
+
+  - platform: gpio
+    id: sw_circulation
+    name: "Circulation switch"
+    pin: 
+      number: D1
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_press:
+      then:
+        - script.execute: circulation_activate
+    on_release: 
+      then:
+        - script.execute: circulation_deactivate
+
+        
+  - platform: gpio
+    id: sw_thermostat
+    name: "Thermostat switch"
+    pin: 
+      number: D2
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+
+switch:
+  - platform: output
+    output: activator_heatpump
+    name: "Heatpump heating activator"
+
+# outputs
+output:
+  - platform: gpio
+    pin: D5
+    id: activator_heatpump
+
+  - platform: gpio
+    pin: 
+      number: D6
+      allow_other_uses: true
+    id: activator_circulation
+    
+
+interval:
+  - interval: 50ms
+    then:
+      - if:
+          condition:
+            lambda: return id(circulation_active);
+          then:
+            - globals.set:
+                id: circulation_sw_activated_millis
+                value: !lambda return millis();
+      - if:
+          condition:
+            lambda: |-
+              return !id(circulation_is_boot) && time_from_circulation_activated() < circulation_duration_in_ms();
+          then:
+            - output.turn_on: activator_circulation
+          else:
+            - output.turn_off: activator_circulation
+            
+
+
+
+
+
